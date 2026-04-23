@@ -1,0 +1,7 @@
+__pycache__/
+.streamlit/
+.git/
+venv/
+*.zip
+input_images/
+output_images/
