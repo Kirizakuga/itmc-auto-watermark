@@ -1,24 +1,17 @@
-
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
 # Thiết lập thư mục làm việc bên trong container
 WORKDIR /app
 
-# Cài đặt các gói thư viện lõi của Linux để build được Pillow và Streamlit trên Alpine
-# Không có mấy cái gcc, jpeg-dev này là lúc cài Pillow sẽ báo lỗi tung tóe
-RUN apk add --no-cache \
-    gcc \
-    musl-dev \
-    jpeg-dev \
-    zlib-dev \
-    libffi-dev \
-    g++ \
-    linux-headers
+# Cài đặt ffmpeg và các gói cần thiết
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy file requirements vào trước để tận dụng bộ nhớ đệm (cache) của Docker, giúp build nhanh hơn ở các lần sau
+# Copy file requirements vào trước để tận dụng bộ nhớ đệm (cache) của Docker
 COPY requirements.txt .
 
-# Cài đặt các thư viện Python (Streamlit, Pillow)
+# Cài đặt các thư viện Python (Streamlit)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy toàn bộ code và logo vào trong container

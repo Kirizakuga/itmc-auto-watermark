@@ -1,168 +1,237 @@
 import streamlit as st
-from PIL import Image
+import subprocess
 import io
 import zipfile
 import os
+import tempfile
+import concurrent.futures
+from pathlib import Path
 
-# --- ĐƯỜNG DẪN LOGO MẶC ĐỊNH TRÊN SERVER/VPS ---
-# File logo này phải được đặt CÙNG THƯ MỤC với file code (test.py) trên VPS
+# --- ĐƯỜNG DẪN LOGO MẶC ĐỊNH ---
 DEFAULT_LOGO_PATH = "logo-01.png"
 
-
 # ==========================================
-# HÀM XỬ LÝ LÕI (CHẠY NGẦM)
+# HÀM XỬ LÝ LÕI (FFMPEG)
 # ==========================================
-def process_single_image(bg_img, logo_img, config):
-    """
-    Hàm xử lý ghép logo lên ảnh nền. Mọi thao tác đều diễn ra trên RAM.
-    """
-    # Chuyển cả 2 ảnh về hệ màu có hỗ trợ nền trong suốt (RGBA)
-    bg_img = bg_img.convert("RGBA")
-    logo_img = logo_img.convert("RGBA")
 
-    # Lấy kích thước gốc của ảnh nền
-    bg_width, bg_height = bg_img.size
-
-    # Đọc các thông số cấu hình từ giao diện web (thanh trượt)
+def get_ffmpeg_filter(config):
+    """
+    Tạo chuỗi filter_complex cho FFmpeg dựa trên cấu hình.
+    [1:v] là logo, [0:v] là ảnh nền/video.
+    """
     scale_ratio = config.get("logo_scale_ratio", 0.3)
     margin_ratio = config.get("top_margin_ratio", 0.1)
     y_offset = config.get("y_offset_px", -60)
+    
+    # Filter: 
+    # 1. Thu phóng logo dựa trên bề ngang ảnh nền (main_w)
+    # 2. Ghi đè (overlay) lên ảnh nền tại vị trí tính toán
+    filter_str = (
+        f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
+        f"[0:v][logo]overlay=(W-w)/2:H*{margin_ratio}+{y_offset}"
+    )
+    return filter_str
 
-    # Tính toán kích thước mới cho logo dựa trên tỷ lệ bề ngang ảnh nền
-    target_logo_width = int(bg_width * scale_ratio)
-    aspect_ratio = logo_img.height / logo_img.width
-    target_logo_height = int(target_logo_width * aspect_ratio)
+def process_image_pipe(image_bytes, logo_path, config):
+    """
+    Xử lý ảnh tĩnh hoàn toàn trên RAM qua Pipe để đạt tốc độ cao nhất.
+    Sử dụng .communicate() để tránh Deadlock.
+    """
+    filter_complex = get_ffmpeg_filter(config)
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', 'pipe:0',              # Nhận ảnh từ stdin
+        '-i', logo_path,             # File logo
+        '-filter_complex', filter_complex,
+        '-f', 'image2pipe',          # Xuất định dạng pipe
+        '-vcodec', 'png',            # Giữ chất lượng PNG
+        'pipe:1'                     # Đẩy kết quả ra stdout
+    ]
+    
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate(input=image_bytes)
+    
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg Error: {stderr.decode()}")
+    
+    return stdout
 
-    # Thu phóng logo bằng thuật toán chất lượng cao LANCZOS
-    resized_logo = logo_img.resize((target_logo_width, target_logo_height), Image.Resampling.LANCZOS)
+def extract_frame_fast_seek(video_bytes, timestamp, logo_path, config):
+    """
+    Trích xuất 1 frame từ video tại timestamp cụ thể (Fast Seek).
+    Dùng để Live Preview cực nhanh.
+    """
+    filter_complex = get_ffmpeg_filter(config)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
+        tmp_video.write(video_bytes)
+        tmp_video_path = tmp_video.name
 
-    # Tính toán tọa độ dán (X: canh giữa, Y: canh theo lề và số pixel bù trừ)
-    x_position = (bg_width - target_logo_width) // 2
-    y_position = int(bg_height * margin_ratio) + y_offset
+    try:
+        cmd = [
+            'ffmpeg', '-y',
+            '-ss', str(timestamp),       # Fast Seek (đặt trước -i)
+            '-i', tmp_video_path,
+            '-i', logo_path,
+            '-filter_complex', filter_complex,
+            '-frames:v', '1',            # Chỉ lấy 1 frame
+            '-f', 'image2pipe',
+            '-vcodec', 'png',
+            'pipe:1'
+        ]
+        
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+        
+        if process.returncode != 0:
+            raise Exception(f"FFmpeg Error: {stderr.decode()}")
+        
+        return stdout
+    finally:
+        if os.path.exists(tmp_video_path):
+            os.remove(tmp_video_path)
 
-    # Tạo một lớp kính ảo (trong suốt) bằng kích thước ảnh nền
-    transparent_layer = Image.new('RGBA', bg_img.size, (0, 0, 0, 0))
-    # Dán logo lên lớp kính ảo đó
-    transparent_layer.paste(resized_logo, (x_position, y_position), mask=resized_logo)
-
-    # Gộp lớp kính ảo chứa logo đè lên ảnh nền gốc
-    final_img = Image.alpha_composite(bg_img, transparent_layer)
-    return final_img
-
+def process_video_full(video_bytes, video_name, logo_path, config):
+    """
+    Xử lý toàn bộ video. Ghi file tạm và dọn dẹp sạch sẽ.
+    """
+    filter_complex = get_ffmpeg_filter(config)
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        input_path = os.path.join(tmp_dir, "input_" + video_name)
+        output_path = os.path.join(tmp_dir, "output_" + video_name)
+        
+        with open(input_path, 'wb') as f:
+            f.write(video_bytes)
+            
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', input_path,
+            '-i', logo_path,
+            '-filter_complex', filter_complex,
+            '-vcodec', 'libx264',
+            '-preset', 'medium',        # Cân bằng giữa tốc độ và dung lượng
+            '-crf', '23',               # Chất lượng tiêu chuẩn
+            '-acodec', 'copy',          # Giữ nguyên âm thanh
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"FFmpeg Error: {result.stderr}")
+            
+        with open(output_path, 'rb') as f:
+            return f.read()
 
 # ==========================================
 # GIAO DIỆN WEB (STREAMLIT)
 # ==========================================
-# Cài đặt tiêu đề tab trên trình duyệt và mở rộng hiển thị full màn hình
-st.set_page_config(page_title="Auto Watermark Tool", layout="wide")
+st.set_page_config(page_title="Auto Watermark Tool (FFmpeg)", layout="wide")
 
-st.title("🧩 Tool Gắn Logo Tự Động")
-st.markdown("Kéo thả ảnh vào đây, tinh chỉnh vị trí và tải toàn bộ kết quả về dưới dạng file ZIP.")
+st.title("🧩 Tool Gắn Logo Tự Động (Pro)")
+st.markdown("Hỗ trợ cả **Ảnh** và **Video**. Sử dụng engine FFmpeg cho hiệu suất tối đa.")
 
-# Chia giao diện làm 2 cột (Cột trái nhỏ hơn cột phải)
 col1, col2 = st.columns([1, 2])
 
-# --- CỘT 1: CÁC THANH TRƯỢT ĐIỀU CHỈNH ---
 with col1:
     st.header("⚙️ Tinh chỉnh thông số")
-    # Tạo thanh trượt cho người dùng tự kéo. (Tên, min, max, mặc định, bước nhảy)
-    scale_ratio = st.slider("📐 Kích thước Logo (scale_ratio)", min_value=0.05, max_value=1.0, value=0.3, step=0.05)
-    margin_ratio = st.slider("📏 Lề trên (top_margin_ratio)", min_value=0.0, max_value=0.5, value=0.1, step=0.01)
-    y_offset = st.slider("↕️ Bù trừ độ cao (y_offset_px)", min_value=-1000, max_value=1000, value=-60, step=10)
-
-    # Gói các giá trị thanh trượt vào một biến config để truyền vào hàm xử lý
+    scale_ratio = st.slider("📐 Kích thước Logo", 0.05, 1.0, 0.3, 0.05)
+    margin_ratio = st.slider("📏 Lề trên (Y ratio)", 0.0, 0.5, 0.1, 0.01)
+    y_offset = st.slider("↕️ Bù trừ độ cao (px)", -1000, 1000, -60, 10)
+    
     config = {
         "logo_scale_ratio": scale_ratio,
         "top_margin_ratio": margin_ratio,
         "y_offset_px": y_offset
     }
 
-# --- CỘT 2: KHU VỰC KÉO THẢ ẢNH ---
 with col2:
     st.header("📂 Tải file lên")
-
-    # Ô upload logo (MỚI THÊM)
-    logo_upload = st.file_uploader("1. Tải lên Logo khác (Tùy chọn. Để trống sẽ dùng logo mặc định)", type=['png'])
-
-    # Ô upload ảnh nền
-    bg_files = st.file_uploader("2. Kéo thả các ảnh cần gắn Logo vào đây", type=['png', 'jpg', 'jpeg', 'webp'],
+    logo_upload = st.file_uploader("1. Tải lên Logo (Tùy chọn)", type=['png'])
+    
+    # Hỗ trợ cả ảnh và video
+    bg_files = st.file_uploader("2. Kéo thả Ảnh hoặc Video vào đây", 
+                                type=['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mov', 'avi'],
                                 accept_multiple_files=True)
 
-# ==========================================
-# THỰC THI & TẠO FILE TẢI VỀ
-# ==========================================
-# Nếu người dùng đã upload ảnh nền lên
 if bg_files:
+    # --- QUẢN LÝ LOGO ---
+    temp_logo_path = None
     try:
-        # --- LOGIC ƯU TIÊN LOGO ---
-        # 1. Nếu có file upload lên thì xài file đó
         if logo_upload is not None:
-            logo_img = Image.open(logo_upload)
-        # 2. Nếu không có file upload thì rà xem có file mặc định trên server không
+            # Lưu logo tạm để FFmpeg đọc
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(logo_upload.getvalue())
+                temp_logo_path = tmp.name
         elif os.path.exists(DEFAULT_LOGO_PATH):
-            logo_img = Image.open(DEFAULT_LOGO_PATH)
-        # 3. Nếu lỡ mất cả 2 thì báo lỗi và dừng chạy code
+            temp_logo_path = DEFAULT_LOGO_PATH
         else:
-            st.error(f"⚠️ Lỗi: Không tìm thấy logo mặc định ({DEFAULT_LOGO_PATH}) và bạn cũng chưa tải logo nào lên!")
+            st.error("⚠️ Không tìm thấy logo!")
             st.stop()
 
         st.markdown("---")
-        st.subheader("👀 Preview & Tải về")
+        st.subheader("👀 Preview & Thực thi")
 
-        # Tạo nút bấm màu xanh (primary) để bắt đầu chạy
-        if st.button("🚀 Bắt đầu xử lý ảnh", type="primary"):
-            # Hiện thanh màu xanh chạy % tiến độ
-            progress_text = "Đang xử lý ảnh..."
-            my_bar = st.progress(0, text=progress_text)
+        # --- XỬ LÝ PREVIEW (Ảnh/Video đầu tiên) ---
+        first_file = bg_files[0]
+        is_video = first_file.type.startswith('video')
+        
+        preview_container = st.container()
+        
+        if is_video:
+            # Nếu là video, thêm thanh trượt chọn thời điểm preview
+            preview_ts = st.slider("🕒 Xem trước tại giây thứ:", 0, 60, 0) # Giới hạn 60s đầu để demo
+            if st.button("🔄 Cập nhật Preview Video"):
+                with st.spinner("Đang trích xuất frame..."):
+                    frame_bytes = extract_frame_fast_seek(first_file.getvalue(), preview_ts, temp_logo_path, config)
+                    st.image(frame_bytes, caption=f"Preview tại {preview_ts}s")
+        else:
+            # Nếu là ảnh, preview tức thì
+            with st.spinner("Đang tạo preview..."):
+                preview_bytes = process_image_pipe(first_file.getvalue(), temp_logo_path, config)
+                st.image(preview_bytes, caption="Ảnh Preview (Ảnh đầu tiên)")
 
-            # Tạo một không gian bộ nhớ ảo trên RAM để chứa file ZIP
+        # --- NÚT BẮT ĐẦU XỬ LÝ BATCH ---
+        if st.button("🚀 Bắt đầu xử lý toàn bộ", type="primary"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             zip_buffer = io.BytesIO()
+            
+            with zipfile.ZipFile(zip_buffer, "w") as zip_f:
+                # Giới hạn số worker để tránh sập CPU
+                max_workers = min(os.cpu_count() or 2, 4)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {}
+                    for f in bg_files:
+                        f_bytes = f.getvalue()
+                        if f.type.startswith('video'):
+                            futures[executor.submit(process_video_full, f_bytes, f.name, temp_logo_path, config)] = f.name
+                        else:
+                            futures[executor.submit(process_image_pipe, f_bytes, temp_logo_path, config)] = f.name
+                    
+                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                        f_name = futures[future]
+                        try:
+                            result_bytes = future.result()
+                            zip_f.writestr(f"watermarked_{f_name}", result_bytes)
+                            
+                            prog = (i + 1) / len(bg_files)
+                            progress_bar.progress(prog)
+                            status_text.text(f"Đã xong: {f_name} ({i+1}/{len(bg_files)})")
+                        except Exception as e:
+                            st.error(f"Lỗi khi xử lý {f_name}: {e}")
 
-            # Mở file ZIP ảo đó ra để chuẩn bị nhét ảnh vào
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                total_files = len(bg_files)
-
-                # Vòng lặp duyệt qua từng ảnh nền người dùng tải lên
-                for idx, bg_file in enumerate(bg_files):
-                    # Mở ảnh và cho qua hàm xử lý gắn logo
-                    bg_img = Image.open(bg_file)
-                    final_img = process_single_image(bg_img, logo_img, config)
-
-                    # Xác định đuôi ảnh gốc để lưu ra cho đúng chuẩn (JPG hoặc PNG)
-                    ext = bg_file.name.split('.')[-1].lower()
-                    fmt = "JPEG" if ext in ['jpg', 'jpeg'] else "PNG"
-
-                    if fmt == "JPEG":
-                        final_img = final_img.convert("RGB")  # JPG không hỗ trợ nền trong suốt nên phải convert
-
-                    # Lưu ảnh với chất lượng tối đa (quality=100) và tắt tính năng nén màu (subsampling=0)
-                    img_byte_arr = io.BytesIO()
-                    if fmt == "JPEG":
-                        final_img.save(img_byte_arr, format=fmt, quality=100, subsampling=0)
-                    else:
-                        final_img.save(img_byte_arr, format=fmt)  # PNG mặc định là lossless nên không bị mờ
-
-                    img_byte_arr.seek(0)
-
-                    # Ghi ảnh từ RAM thẳng vào trong file ZIP ảo
-                    zip_file.writestr(f"done_{bg_file.name}", img_byte_arr.read())
-
-                    # Chỉ trích xuất ảnh đầu tiên để hiện lên giao diện web (đỡ lag trình duyệt)
-                    if idx == 0:
-                        st.image(final_img, caption="Ảnh Preview (Ảnh đầu tiên)", width="stretch")
-
-                    # Cập nhật thanh % tiến độ
-                    my_bar.progress((idx + 1) / total_files, text=f"Đang xử lý: {idx + 1}/{total_files}")
-
-            # Chạy xong hết vòng lặp, báo xanh và hiện nút tải file ZIP
-            st.success("✅ Hoàn tất!")
+            st.success("✅ Tất cả đã hoàn thành!")
             st.download_button(
-                label="📥 Tải toàn bộ ảnh (File ZIP)",
-                data=zip_buffer.getvalue(),  # Rút ruột toàn bộ dữ liệu file ZIP ảo để người dùng tải về máy
-                file_name="watermarked_images.zip",
+                label="📥 Tải về File ZIP",
+                data=zip_buffer.getvalue(),
+                file_name="watermarked_media.zip",
                 mime="application/zip"
             )
 
-    except Exception as e:
-        # Bắt lỗi nếu có file hỏng hoặc lỗi không lường trước
-        st.error(f"Có lỗi xảy ra: {e}")
+    finally:
+        # Dọn dẹp logo tạm nếu có
+        if logo_upload is not None and temp_logo_path and os.path.exists(temp_logo_path):
+            os.remove(temp_logo_path)
