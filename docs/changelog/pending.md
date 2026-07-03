@@ -6,3 +6,6 @@
 - Implemented Fast-Seek frame extraction for video previews.
 - Switched base image to `python:3.11-slim` for stable FFmpeg support.
 - Added `ThreadPoolExecutor` for parallel batch processing.
+
+[17:15] - packages.txt - Create file - Added FFmpeg to fix FileNotFoundError in Streamlit Community Cloud.
+[17:15] - test.py - Update UI - Injected Taste Skill CSS (Inter font, minimal UI, brutalist buttons) based on taste-skill conventions.

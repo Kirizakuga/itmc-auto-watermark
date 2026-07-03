@@ -127,10 +127,52 @@ def process_video_full(video_bytes, video_name, logo_path, config):
 # ==========================================
 # GIAO DIỆN WEB (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="Auto Watermark Tool (FFmpeg)", layout="wide")
+st.set_page_config(page_title="Auto Watermark Tool", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("🧩 Tool Gắn Logo Tự Động (Pro)")
-st.markdown("Hỗ trợ cả **Ảnh** và **Video**. Sử dụng engine FFmpeg cho hiệu suất tối đa.")
+st.markdown("""
+<style>
+    /* Premium Typography */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif !important;
+    }
+    
+    /* Clean up Streamlit UI */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* High-End Brutalist/Minimalist Form Styling */
+    .stButton>button {
+        background-color: #111111;
+        color: #FFFFFF;
+        border: 1px solid #222222;
+        border-radius: 4px;
+        padding: 0.5rem 2rem;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+    .stButton>button:hover {
+        background-color: #333333;
+        border-color: #444444;
+        color: #FFFFFF;
+    }
+    
+    /* Typography improvements */
+    h1 {
+        letter-spacing: -0.03em;
+        font-weight: 600;
+    }
+    h2, h3 {
+        letter-spacing: -0.02em;
+        font-weight: 500;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Auto Watermark Tool")
+st.markdown("<p style='color: #666; font-size: 1.1rem; margin-top: -1rem; margin-bottom: 2rem;'>Professional media watermarking powered by FFmpeg engine.</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 2])
 
