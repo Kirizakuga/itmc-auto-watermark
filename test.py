@@ -112,7 +112,7 @@ def process_video_full(video_bytes, video_name, logo_path, config):
             '-filter_complex', filter_complex,
             '-vcodec', 'libx264',
             '-preset', 'medium',        # Cân bằng giữa tốc độ và dung lượng
-            '-crf', '23',               # Chất lượng tiêu chuẩn
+            '-crf', '15',               # Chất lượng tiêu chuẩn
             '-acodec', 'copy',          # Giữ nguyên âm thanh
             output_path
         ]
