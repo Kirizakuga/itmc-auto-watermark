@@ -9,3 +9,5 @@
 
 [17:15] - packages.txt - Create file - Added FFmpeg to fix FileNotFoundError in Streamlit Community Cloud.
 [17:15] - test.py - Update UI - Injected Taste Skill CSS (Inter font, minimal UI, brutalist buttons) based on taste-skill conventions.
+[2026-09-28] - test.py, docs - Feature: Free Logo Placement - Added 2D positioning presets and free X/Y movement sliders with top-center default.
+

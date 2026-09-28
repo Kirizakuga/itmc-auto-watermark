@@ -10,6 +10,18 @@ from pathlib import Path
 # --- ĐƯỜNG DẪN LOGO MẶC ĐỊNH ---
 DEFAULT_LOGO_PATH = "logo-01.png"
 
+# ponytail: presets hardcoded in dict, upgrade to enum/config if preset count > 10.
+POSITION_PRESETS = {
+    "Top-Center (Mặc định)": {"x": 0.5, "y": 0.05, "x_off": 0, "y_off": 0},
+    "Top-Left":              {"x": 0.05, "y": 0.05, "x_off": 0, "y_off": 0},
+    "Top-Right":             {"x": 0.95, "y": 0.05, "x_off": 0, "y_off": 0},
+    "Center":                {"x": 0.5, "y": 0.5, "x_off": 0, "y_off": 0},
+    "Bottom-Left":           {"x": 0.05, "y": 0.95, "x_off": 0, "y_off": 0},
+    "Bottom-Center":         {"x": 0.5, "y": 0.95, "x_off": 0, "y_off": 0},
+    "Bottom-Right":          {"x": 0.95, "y": 0.95, "x_off": 0, "y_off": 0},
+    "Tùy chỉnh":             None,
+}
+
 # ==========================================
 # HÀM XỬ LÝ LÕI (FFMPEG)
 # ==========================================
@@ -20,16 +32,23 @@ def get_ffmpeg_filter(config):
     [1:v] là logo, [0:v] là ảnh nền/video.
     """
     scale_ratio = config.get("logo_scale_ratio", 0.3)
-    margin_ratio = config.get("top_margin_ratio", 0.1)
-    y_offset = config.get("y_offset_px", -60)
-    
-    # Filter: 
-    # 1. Thu phóng logo dựa trên bề ngang ảnh nền (main_w)
-    # 2. Ghi đè (overlay) lên ảnh nền tại vị trí tính toán
-    filter_str = (
-        f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
-        f"[0:v][logo]overlay=(W-w)/2:H*{margin_ratio}+{y_offset}"
-    )
+    x_ratio = config.get("x_ratio", 0.5)
+    x_offset = config.get("x_offset_px", 0)
+
+    if "y_ratio" in config:
+        y_ratio = config.get("y_ratio", 0.05)
+        y_offset = config.get("y_offset_px", 0)
+        filter_str = (
+            f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
+            f"[0:v][logo]overlay=(W-w)*{x_ratio}{x_offset:+d}:(H-h)*{y_ratio}{y_offset:+d}"
+        )
+    else:
+        margin_ratio = config.get("top_margin_ratio", 0.1)
+        y_offset = config.get("y_offset_px", -60)
+        filter_str = (
+            f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
+            f"[0:v][logo]overlay=(W-w)/2:H*{margin_ratio}+{y_offset}"
+        )
     return filter_str
 
 def process_image_pipe(image_bytes, logo_path, config):
@@ -179,13 +198,41 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.header("⚙️ Tinh chỉnh thông số")
     scale_ratio = st.slider("📐 Kích thước Logo", 0.05, 1.0, 0.3, 0.05)
-    margin_ratio = st.slider("📏 Lề trên (Y ratio)", 0.0, 0.5, 0.1, 0.01)
-    y_offset = st.slider("↕️ Bù trừ độ cao (px)", -1000, 1000, -60, 10)
-    
+
+    if "pos_x" not in st.session_state:
+        st.session_state.pos_x = 0.5
+        st.session_state.pos_y = 0.05
+        st.session_state.off_x = 0
+        st.session_state.off_y = 0
+
+    def apply_preset():
+        choice = st.session_state.preset_choice
+        preset = POSITION_PRESETS.get(choice)
+        if preset:
+            st.session_state.pos_x = preset["x"]
+            st.session_state.pos_y = preset["y"]
+            st.session_state.off_x = preset["x_off"]
+            st.session_state.off_y = preset["y_off"]
+
+    st.selectbox(
+        "📍 Vị trí định sẵn",
+        list(POSITION_PRESETS.keys()),
+        index=0,
+        key="preset_choice",
+        on_change=apply_preset,
+    )
+
+    x_ratio = st.slider("↔️ Vị trí ngang (X ratio)", 0.0, 1.0, step=0.01, key="pos_x")
+    x_offset = st.slider("↔️ Bù trừ ngang (px)", -1000, 1000, step=5, key="off_x")
+    y_ratio = st.slider("↕️ Vị trí dọc (Y ratio)", 0.0, 1.0, step=0.01, key="pos_y")
+    y_offset = st.slider("↕️ Bù trừ dọc (px)", -1000, 1000, step=5, key="off_y")
+
     config = {
         "logo_scale_ratio": scale_ratio,
-        "top_margin_ratio": margin_ratio,
-        "y_offset_px": y_offset
+        "x_ratio": x_ratio,
+        "x_offset_px": x_offset,
+        "y_ratio": y_ratio,
+        "y_offset_px": y_offset,
     }
 
 with col2:
