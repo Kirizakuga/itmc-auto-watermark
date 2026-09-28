@@ -12,7 +12,7 @@
 [2026-09-28] - test.py, docs - Feature: Free Logo Placement - Added 2D positioning presets and free X/Y movement sliders with top-center default.
 [2026-09-28] - Deployment & Runtime Fixes:
 - Added `.python-version` pinned to `3.11` to prevent Streamlit Cloud from defaulting to Python 3.14 (causing pyarrow segfault and ASGI issues).
-- Pinned `streamlit>=1.42.0,<1.50.0` in `requirements.txt` to eliminate ASGI/Starlette multipart upload `ClientDisconnect` crashes.
+- Kept `streamlit` aligned with Streamlit Cloud native environment to avoid 404 upload route mismatches.
 - Added `.streamlit/config.toml` (maxUploadSize=1000MB, CORS/XSRF disabled) for reliable file uploads through Cloudflare proxy.
 - Hardened `test.py` logo path resolution, safe video MIME detection, and even-dimension logo scaling.
 
