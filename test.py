@@ -8,7 +8,7 @@ import concurrent.futures
 from pathlib import Path
 
 # --- ĐƯỜNG DẪN LOGO MẶC ĐỊNH ---
-DEFAULT_LOGO_PATH = "logo-01.png"
+DEFAULT_LOGO_PATH = str(Path(__file__).resolve().parent / "logo-01.png")
 
 # ponytail: presets hardcoded in dict, upgrade to enum/config if preset count > 10.
 POSITION_PRESETS = {
@@ -39,14 +39,14 @@ def get_ffmpeg_filter(config):
         y_ratio = config.get("y_ratio", 0.05)
         y_offset = config.get("y_offset_px", 0)
         filter_str = (
-            f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
+            f"[1:v]scale=trunc(iw*{scale_ratio}/2)*2:-2[logo];"
             f"[0:v][logo]overlay=(W-w)*{x_ratio}{x_offset:+d}:(H-h)*{y_ratio}{y_offset:+d}"
         )
     else:
         margin_ratio = config.get("top_margin_ratio", 0.1)
         y_offset = config.get("y_offset_px", -60)
         filter_str = (
-            f"[1:v]scale=iw*{scale_ratio}:-1[logo];"
+            f"[1:v]scale=trunc(iw*{scale_ratio}/2)*2:-2[logo];"
             f"[0:v][logo]overlay=(W-w)/2:H*{margin_ratio}+{y_offset}"
         )
     return filter_str
@@ -72,7 +72,7 @@ def process_image_pipe(image_bytes, logo_path, config):
     stdout, stderr = process.communicate(input=image_bytes)
     
     if process.returncode != 0:
-        raise Exception(f"FFmpeg Error: {stderr.decode()}")
+        raise Exception(f"FFmpeg Error: {stderr.decode('utf-8', errors='replace')}")
     
     return stdout
 
@@ -263,8 +263,14 @@ if bg_files:
         st.subheader("👀 Preview & Thực thi")
 
         # --- XỬ LÝ PREVIEW (Ảnh/Video đầu tiên) ---
+        def is_video_file(file_obj):
+            file_type = getattr(file_obj, "type", "") or ""
+            if file_type.startswith("video"):
+                return True
+            return Path(file_obj.name).suffix.lower() in [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+
         first_file = bg_files[0]
-        is_video = first_file.type.startswith('video')
+        is_video = is_video_file(first_file)
         
         preview_container = st.container()
         
@@ -295,7 +301,7 @@ if bg_files:
                     futures = {}
                     for f in bg_files:
                         f_bytes = f.getvalue()
-                        if f.type.startswith('video'):
+                        if is_video_file(f):
                             futures[executor.submit(process_video_full, f_bytes, f.name, temp_logo_path, config)] = f.name
                         else:
                             futures[executor.submit(process_image_pipe, f_bytes, temp_logo_path, config)] = f.name
