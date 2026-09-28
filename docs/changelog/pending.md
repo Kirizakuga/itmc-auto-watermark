@@ -13,6 +13,6 @@
 [2026-09-28] - Deployment & Runtime Fixes:
 - Added `.python-version` pinned to `3.11` to prevent Streamlit Cloud from defaulting to Python 3.14 (causing pyarrow segfault and ASGI issues).
 - Kept `streamlit` aligned with Streamlit Cloud native environment to avoid 404 upload route mismatches.
-- Added `.streamlit/config.toml` (maxUploadSize=1000MB, CORS/XSRF disabled) for reliable file uploads through Cloudflare proxy.
-- Hardened `test.py` logo path resolution, safe video MIME detection, and even-dimension logo scaling.
+- Added `.streamlit/config.toml` (maxUploadSize=200MB, CORS/XSRF disabled) aligned with Cloudflare Community Cloud proxy limits.
+- Hardened `test.py` logo path resolution, safe video MIME detection, even-dimension logo scaling, and decode error handling.
 

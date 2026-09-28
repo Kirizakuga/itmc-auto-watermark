@@ -104,7 +104,7 @@ def extract_frame_fast_seek(video_bytes, timestamp, logo_path, config):
         stdout, stderr = process.communicate()
         
         if process.returncode != 0:
-            raise Exception(f"FFmpeg Error: {stderr.decode()}")
+            raise Exception(f"FFmpeg Error: {stderr.decode('utf-8', errors='replace')}")
         
         return stdout
     finally:
