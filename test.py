@@ -1,10 +1,10 @@
 import streamlit as st
 import subprocess
-import io
-import zipfile
 import os
+import shutil
 import tempfile
-import concurrent.futures
+import zipfile
+import gc
 from pathlib import Path
 
 # --- ĐƯỜNG DẪN LOGO MẶC ĐỊNH ---
@@ -22,8 +22,8 @@ def get_ffmpeg_filter(config):
     scale_ratio = config.get("logo_scale_ratio", 0.3)
     margin_ratio = config.get("top_margin_ratio", 0.1)
     y_offset = config.get("y_offset_px", -60)
-    
-    # Filter: 
+
+    # Filter:
     # 1. Thu phóng logo dựa trên bề ngang ảnh nền (main_w)
     # 2. Ghi đè (overlay) lên ảnh nền tại vị trí tính toán
     filter_str = (
@@ -32,97 +32,114 @@ def get_ffmpeg_filter(config):
     )
     return filter_str
 
-def process_image_pipe(image_bytes, logo_path, config):
+def process_image_to_file(image_path, output_path, logo_path, config):
     """
-    Xử lý ảnh tĩnh hoàn toàn trên RAM qua Pipe để đạt tốc độ cao nhất.
-    Sử dụng .communicate() để tránh Deadlock.
+    Xử lý ảnh từ file đĩa ra file đĩa qua FFmpeg.
+    Không giữ dữ liệu uncompressed trong RAM.
+    -q:v 2 đảm bảo chất lượng hình ảnh đạt ~98% (near-lossless JPEG).
     """
     filter_complex = get_ffmpeg_filter(config)
-    
+
     cmd = [
         'ffmpeg', '-y',
-        '-i', 'pipe:0',              # Nhận ảnh từ stdin
-        '-i', logo_path,             # File logo
+        '-nostdin',
+        '-loglevel', 'error',
+        '-i', image_path,
+        '-i', logo_path,
         '-filter_complex', filter_complex,
-        '-f', 'image2pipe',          # Xuất định dạng pipe
-        '-vcodec', 'png',            # Giữ chất lượng PNG
-        'pipe:1'                     # Đẩy kết quả ra stdout
+        '-q:v', '2',
+        output_path
     ]
-    
-    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = process.communicate(input=image_bytes)
-    
-    if process.returncode != 0:
-        raise Exception(f"FFmpeg Error: {stderr.decode()}")
-    
-    return stdout
 
-def extract_frame_fast_seek(video_bytes, timestamp, logo_path, config):
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise Exception(f"FFmpeg Error: {result.stderr}")
+
+    return output_path
+
+def process_video_to_file(input_path, output_path, logo_path, config):
+    """
+    Xử lý video từ file đĩa ra file đĩa.
+    CRF 20 tối ưu dung lượng, yuv420p + faststart tương thích mọi thiết bị.
+    """
+    filter_complex = get_ffmpeg_filter(config)
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-nostdin',
+        '-loglevel', 'error',
+        '-i', input_path,
+        '-i', logo_path,
+        '-filter_complex', filter_complex,
+        '-vcodec', 'libx264',
+        '-preset', 'fast',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-acodec', 'copy',
+        output_path
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        raise Exception(f"FFmpeg Error: {result.stderr}")
+
+    return output_path
+
+def extract_frame_fast_seek(video_path, timestamp, logo_path, config):
     """
     Trích xuất 1 frame từ video tại timestamp cụ thể (Fast Seek).
     Dùng để Live Preview cực nhanh.
     """
     filter_complex = get_ffmpeg_filter(config)
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_video:
-        tmp_video.write(video_bytes)
-        tmp_video_path = tmp_video.name
 
-    try:
-        cmd = [
-            'ffmpeg', '-y',
-            '-ss', str(timestamp),       # Fast Seek (đặt trước -i)
-            '-i', tmp_video_path,
-            '-i', logo_path,
-            '-filter_complex', filter_complex,
-            '-frames:v', '1',            # Chỉ lấy 1 frame
-            '-f', 'image2pipe',
-            '-vcodec', 'png',
-            'pipe:1'
-        ]
-        
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, stderr = process.communicate()
-        
-        if process.returncode != 0:
-            raise Exception(f"FFmpeg Error: {stderr.decode()}")
-        
-        return stdout
-    finally:
-        if os.path.exists(tmp_video_path):
-            os.remove(tmp_video_path)
+    cmd = [
+        'ffmpeg', '-y',
+        '-nostdin',
+        '-loglevel', 'error',
+        '-ss', str(timestamp),
+        '-i', video_path,
+        '-i', logo_path,
+        '-filter_complex', filter_complex,
+        '-frames:v', '1',
+        '-f', 'image2pipe',
+        '-vcodec', 'png',
+        'pipe:1'
+    ]
 
-def process_video_full(video_bytes, video_name, logo_path, config):
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg Error: {stderr.decode()}")
+
+    return stdout
+
+def preview_image_pipe(image_path, logo_path, config):
     """
-    Xử lý toàn bộ video. Ghi file tạm và dọn dẹp sạch sẽ.
+    Tạo preview nhanh cho 1 ảnh duy nhất từ đường dẫn tạm.
     """
     filter_complex = get_ffmpeg_filter(config)
-    
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        input_path = os.path.join(tmp_dir, "input_" + video_name)
-        output_path = os.path.join(tmp_dir, "output_" + video_name)
-        
-        with open(input_path, 'wb') as f:
-            f.write(video_bytes)
-            
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', input_path,
-            '-i', logo_path,
-            '-filter_complex', filter_complex,
-            '-vcodec', 'libx264',
-            '-preset', 'medium',        # Cân bằng giữa tốc độ và dung lượng
-            '-crf', '15',               # Chất lượng tiêu chuẩn
-            '-acodec', 'copy',          # Giữ nguyên âm thanh
-            output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(f"FFmpeg Error: {result.stderr}")
-            
-        with open(output_path, 'rb') as f:
-            return f.read()
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-nostdin',
+        '-loglevel', 'error',
+        '-i', image_path,
+        '-i', logo_path,
+        '-filter_complex', filter_complex,
+        '-f', 'image2pipe',
+        '-vcodec', 'png',
+        'pipe:1'
+    ]
+
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg Error: {stderr.decode()}")
+
+    return stdout
 
 # ==========================================
 # GIAO DIỆN WEB (STREAMLIT)
@@ -218,60 +235,105 @@ if bg_files:
         # --- XỬ LÝ PREVIEW (Ảnh/Video đầu tiên) ---
         first_file = bg_files[0]
         is_video = first_file.type.startswith('video')
-        
+
         preview_container = st.container()
-        
+        first_ext = Path(first_file.name).suffix or ('.mp4' if is_video else '.png')
+
         if is_video:
-            # Nếu là video, thêm thanh trượt chọn thời điểm preview
-            preview_ts = st.slider("🕒 Xem trước tại giây thứ:", 0, 60, 0) # Giới hạn 60s đầu để demo
+            preview_ts = st.slider("🕒 Xem trước tại giây thứ:", 0, 60, 0)
             if st.button("🔄 Cập nhật Preview Video"):
                 with st.spinner("Đang trích xuất frame..."):
-                    frame_bytes = extract_frame_fast_seek(first_file.getvalue(), preview_ts, temp_logo_path, config)
-                    st.image(frame_bytes, caption=f"Preview tại {preview_ts}s")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=first_ext) as tmp_prev:
+                        shutil.copyfileobj(first_file, tmp_prev)
+                        tmp_prev_path = tmp_prev.name
+                    first_file.seek(0)
+                    try:
+                        frame_bytes = extract_frame_fast_seek(tmp_prev_path, preview_ts, temp_logo_path, config)
+                        st.image(frame_bytes, caption=f"Preview tại {preview_ts}s")
+                    finally:
+                        if os.path.exists(tmp_prev_path):
+                            os.remove(tmp_prev_path)
         else:
-            # Nếu là ảnh, preview tức thì
             with st.spinner("Đang tạo preview..."):
-                preview_bytes = process_image_pipe(first_file.getvalue(), temp_logo_path, config)
-                st.image(preview_bytes, caption="Ảnh Preview (Ảnh đầu tiên)")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=first_ext) as tmp_prev:
+                    shutil.copyfileobj(first_file, tmp_prev)
+                    tmp_prev_path = tmp_prev.name
+                first_file.seek(0)
+                try:
+                    preview_bytes = preview_image_pipe(tmp_prev_path, temp_logo_path, config)
+                    st.image(preview_bytes, caption="Ảnh Preview (Ảnh đầu tiên)")
+                finally:
+                    if os.path.exists(tmp_prev_path):
+                        os.remove(tmp_prev_path)
 
-        # --- NÚT BẮT ĐẦU XỬ LÝ BATCH ---
+        # --- NÚT BẮT ĐẦU XỬ LÝ BATCH (DISK STREAMING, ZERO-RAM) ---
         if st.button("🚀 Bắt đầu xử lý toàn bộ", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
-            zip_buffer = io.BytesIO()
-            
-            with zipfile.ZipFile(zip_buffer, "w") as zip_f:
-                # Giới hạn số worker để tránh sập CPU
-                max_workers = min(os.cpu_count() or 2, 4)
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {}
-                    for f in bg_files:
-                        f_bytes = f.getvalue()
-                        if f.type.startswith('video'):
-                            futures[executor.submit(process_video_full, f_bytes, f.name, temp_logo_path, config)] = f.name
-                        else:
-                            futures[executor.submit(process_image_pipe, f_bytes, temp_logo_path, config)] = f.name
-                    
-                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                        f_name = futures[future]
-                        try:
-                            result_bytes = future.result()
-                            zip_f.writestr(f"watermarked_{f_name}", result_bytes)
-                            
-                            prog = (i + 1) / len(bg_files)
-                            progress_bar.progress(prog)
-                            status_text.text(f"Đã xong: {f_name} ({i+1}/{len(bg_files)})")
-                        except Exception as e:
-                            st.error(f"Lỗi khi xử lý {f_name}: {e}")
 
-            st.success("✅ Tất cả đã hoàn thành!")
-            st.download_button(
-                label="📥 Tải về File ZIP",
-                data=zip_buffer.getvalue(),
-                file_name="watermarked_media.zip",
-                mime="application/zip"
-            )
+            with tempfile.TemporaryDirectory() as batch_dir:
+                zip_path = os.path.join(batch_dir, "watermarked_media.zip")
+                seen_names = {}
+
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zip_f:
+                    total_files = len(bg_files)
+
+                    for idx, f in enumerate(bg_files):
+                        f_is_video = f.type.startswith('video')
+                        ext = Path(f.name).suffix or ('.mp4' if f_is_video else '.png')
+                        out_ext = ".mp4" if f_is_video else ext
+
+                        # Tên file tạm an toàn bằng index, tránh lỗi ký tự đặc biệt
+                        in_path = os.path.join(batch_dir, f"in_{idx}{ext}")
+                        out_path = os.path.join(batch_dir, f"out_{idx}{out_ext}")
+
+                        # 1. Ghi stream trực tiếp xuống đĩa
+                        with open(in_path, 'wb') as in_f:
+                            shutil.copyfileobj(f, in_f)
+
+                        # 2. Giải phóng ngay buffer upload trong RAM của Streamlit
+                        f.close()
+
+                        # 3. Tính tên file lưu trong file ZIP (chống trùng lặp)
+                        base_name = Path(f.name).stem + out_ext if f_is_video else f.name
+                        count = seen_names.get(base_name, 0)
+                        seen_names[base_name] = count + 1
+                        if count > 0:
+                            arc_stem = Path(base_name).stem
+                            arc_name = f"watermarked_{arc_stem}_{count}{out_ext}"
+                        else:
+                            arc_name = f"watermarked_{base_name}"
+
+                        # 4. Thực thi xử lý tuần tự (FFmpeg tự tối ưu đa luồng)
+                        try:
+                            if f_is_video:
+                                process_video_to_file(in_path, out_path, temp_logo_path, config)
+                            else:
+                                process_image_to_file(in_path, out_path, temp_logo_path, config)
+
+                            zip_f.write(out_path, arcname=arc_name)
+                        except Exception as e:
+                            st.error(f"Lỗi khi xử lý {f.name}: {e}")
+                        finally:
+                            # 5. Dọn dẹp file tạm ngay lập tức
+                            if os.path.exists(in_path):
+                                os.remove(in_path)
+                            if os.path.exists(out_path):
+                                os.remove(out_path)
+                            gc.collect()
+
+                        prog = (idx + 1) / total_files
+                        progress_bar.progress(prog)
+                        status_text.text(f"Đã xử lý: {f.name} ({idx + 1}/{total_files})")
+
+                st.success("✅ Tất cả đã hoàn thành!")
+                with open(zip_path, "rb") as zf:
+                    st.download_button(
+                        label="📥 Tải về File ZIP",
+                        data=zf,
+                        file_name="watermarked_media.zip",
+                        mime="application/zip"
+                    )
 
     finally:
         # Dọn dẹp logo tạm nếu có
