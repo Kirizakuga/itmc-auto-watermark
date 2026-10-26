@@ -13,7 +13,7 @@ Users need a simple, fast way to apply a consistent watermark (logo) to batches 
 - **Logo Management**: Support both a default server-side logo and custom user-uploaded logos.
 - **Batch Upload**: Allow multiple background images to be uploaded at once.
 - **Live Preview**: Show a preview of the first processed image with current settings.
-- **Adjustable Parameters**: Scale, Margin, and Offset.
+- **Adjustable Parameters**: Scale, Position Presets, Free X/Y Movement Ratios, and Pixel Offsets.
 - **Downloadable Output**: Provide all processed images in a single ZIP file.
 
 ## Non-Functional Requirements

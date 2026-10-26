@@ -11,7 +11,7 @@
 - `tempfile`: Standard library for media artifact management.
 
 ## Processing Logic
-- **Filter Graph**: `[1:v]scale=iw*{scale_ratio}:-1[logo];[0:v][logo]overlay=(W-w)/2:H*{margin_ratio}+{y_offset}`
+- **Filter Graph**: `[1:v]scale=iw*{scale_ratio}:-1[logo];[0:v][logo]overlay=(W-w)*{x_ratio}+{x_offset}:(H-h)*{y_ratio}+{y_offset}`
 - **Image Pipeline**: `image2pipe` format used for RAM-to-RAM processing.
 - **Video Pipeline**: `libx264` codec with `crf=23` and `preset=medium`.
 - **Fast Seek**: `-ss` parameter used before `-i` for instantaneous frame extraction.
